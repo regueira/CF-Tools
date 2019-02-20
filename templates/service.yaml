@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Service on ECS
+
+Parameters:
+
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - QA
+    - UAT
+    - PROD
+
+  Project:
+    Description: Project name
+    Type: String
+
+  Owner:
+    Description: Full name or email
+    Type: String
+
+  VpcId:
+    Description: The VPC that the ECS cluster is deployed to
+    Type: AWS::EC2::VPC::Id
+
+  Cluster:
+    Description: Please provide the ECS Cluster ID that this service should run on
+    Type: String
+
+  DesiredCount:
+    Description: How many instances of this task should we run across our cluster?
+    Type: Number
+    Default: 1
+
+  ContainerImage:
+    Type: String
+
+  Family:
+    Type: String
+    Default: Tools
+
+  ContainerName:
+    Type: String
+
+  ContainerMemory:
+    Type: String
+    Default: 1024
+
+  ContainerPort:
+    Type: Number
+    Default: 8080
+
+  JNLPContainerPort:
+    Type: Number
+    Default: 50000
+
+  LoadBalancer:
+    Type: String
+
+Resources:
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref Cluster
+      Role: !Ref ServiceRole
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 50
+      LoadBalancers:
+      - ContainerName: !Ref ContainerName
+        ContainerPort: !Ref ContainerPort
+        LoadBalancerName: !Ref LoadBalancer
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref Family
+      Volumes:
+      - Name: jenkins-home
+        Host:
+          SourcePath: /var/jenkins_home
+      - Name: docker-socket
+        Host:
+          SourcePath: /var/run/docker.sock
+      ContainerDefinitions:
+      - Name: !Ref ContainerName
+        Essential: true
+        Image: !Ref ContainerImage #!Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/users-repo:latest
+        Privileged: true
+        MountPoints:
+        - SourceVolume: jenkins-home
+          ContainerPath: /var/jenkins_home
+        - SourceVolume: docker-socket
+          ContainerPath: /var/run/docker.sock
+        Memory: !Ref ContainerMemory
+        PortMappings:
+        - HostPort: !Ref ContainerPort
+          ContainerPort: !Ref ContainerPort
+          Protocol: tcp
+        - HostPort: !Ref JNLPContainerPort
+          ContainerPort: !Ref JNLPContainerPort
+          Protocol: tcp
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Ref AWS::StackName
+            awslogs-region: !Ref AWS::Region
+            awslogs-stream-prefix: !Ref Environment
+
+  CloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref AWS::StackName
+      RetentionInDays: 90
+
+
+  # This IAM Role grants the service access to register/unregister with the
+  # Application Load Balancer (ALB). It is based on the default documented here:
+  # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/service_IAM_role.html
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecs-service-${AWS::StackName}
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "ecs.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+      - PolicyName: !Sub ecs-service-${AWS::StackName}
+        PolicyDocument:
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+                            "Effect": "Allow",
+                            "Action": [
+                              "ec2:AuthorizeSecurityGroupIngress",
+                              "ec2:Describe*",
+                              "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                              "elasticloadbalancing:Describe*",
+                              "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                              "elasticloadbalancing:DeregisterTargets",
+                              "elasticloadbalancing:DescribeTargetGroups",
+                              "elasticloadbalancing:DescribeTargetHealth",
+                              "elasticloadbalancing:RegisterTargets"
+                            ],
+                            "Resource": "*"
+                          }]
+          }

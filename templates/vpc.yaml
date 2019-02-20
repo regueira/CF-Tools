@@ -1,0 +1,653 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Creates full VPC
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: General Configurations
+      Parameters:
+      - VpcName
+      - Environment
+      - Project
+      - Owner
+    - Label:
+        default: Network
+      Parameters:
+      - VPCCIDR
+      - PrivateSubnetACIDR
+      - PrivateSubnetBCIDR
+      - PublicSubnetACIDR
+      - PublicSubnetBCIDR
+      - SubnetsAZ
+
+Parameters:
+
+  VpcName:
+    Description: Name of current template objects to create
+    Type: String
+    Default: "<vpc name>"
+
+  VPCCIDR:
+    Description: VPC IP CIDR
+    Type: String
+    Default: 10.192.0.0/16
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  PrivateSubnetACIDR:
+    Description: Private Subnet A CIDR
+    Type: String
+    Default: 10.192.20.0/24
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  PrivateSubnetBCIDR:
+    Description: Private Subnet B CIDR
+    Type: String
+    Default: 10.192.21.0/24
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  PublicSubnetACIDR:
+    Description: Public Subnet A CIDR
+    Type: String
+    Default: 10.192.10.0/24
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  PublicSubnetBCIDR:
+    Description: Public Subnet B CIDR
+    Type: String
+    Default: 10.192.11.0/24
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  SubnetsAZ:
+    Description: Select the availability zones for the subnet
+    Type: CommaDelimitedList
+    #Type: List<AWS::EC2::AvailabilityZone::Name>
+
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - QA
+    - UAT
+    - PROD
+
+  Project:
+    Description: Project name
+    Type: String
+
+  Owner:
+    Description: Full name or email
+    Type: String
+
+Resources:
+
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: ''
+          Effect: Allow
+          Principal:
+            Service: vpc-flow-logs.amazonaws.com
+          Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            - logs:DescribeLogGroups
+            - logs:DescribeLogStreams
+            Effect: Allow
+            Resource: "*"
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock:
+        Ref: VPCCIDR
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+      - Key: project
+        Value:
+          Ref: Project
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-VPC"
+  VPCFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn:
+        Fn::GetAtt:
+        - FlowLogRole
+        - Arn
+      LogGroupName:
+        Fn::Join:
+        - ''
+        - - Ref: VpcName
+          - "-VPC-FlowLogs"
+      ResourceId:
+        Ref: VPC
+      ResourceType: VPC
+      TrafficType: ALL
+
+  DhcpOptionSet:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainNameServers:
+      - AmazonProvidedDNS
+      DomainName: ec2.internal
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-VPC-DHCP"
+
+  VpcDhcp:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Description: DHCP Option Set
+    Properties:
+      DhcpOptionsId:
+        Ref: DhcpOptionSet
+      VpcId:
+        Ref: VPC
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      MapPublicIpOnLaunch: 'True'
+      VpcId:
+        Ref: VPC
+      AvailabilityZone:
+        Fn::Select:
+        - 0
+        - Ref: SubnetsAZ
+      CidrBlock:
+        Ref: PublicSubnetACIDR
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: layer
+        Value: networking
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-PublicSubnetA"
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      MapPublicIpOnLaunch: 'True'
+      VpcId:
+        Ref: VPC
+      AvailabilityZone:
+        Fn::Select:
+        - 1
+        - Ref: SubnetsAZ
+      CidrBlock:
+        Ref: PublicSubnetBCIDR
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: layer
+        Value: networking
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-PublicSubnetB"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: layer
+        Value: networking
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-InternetGateway"
+
+  GatewayToInternet:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:
+        Ref: VPC
+      InternetGatewayId:
+        Ref: InternetGateway
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      AvailabilityZone:
+        Fn::Select:
+        - 0
+        - Ref: SubnetsAZ
+      CidrBlock:
+        Ref: PrivateSubnetACIDR
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: layer
+        Value: networking
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-PrivateSubnetA"
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    DependsOn: VPC
+    Properties:
+      VpcId:
+        Ref: VPC
+      AvailabilityZone:
+        Fn::Select:
+        - 1
+        - Ref: SubnetsAZ
+      CidrBlock:
+        Ref: PrivateSubnetBCIDR
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: environment
+        Value:
+          Ref: Environment
+      - Key: layer
+        Value: networking
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-PrivateSubnetB"
+
+  PrivateNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: Network
+        Value: Private
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-Private-Acl"
+
+  PrivateSubnetANetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetA
+      NetworkAclId:
+        Ref: PrivateNetworkAcl
+
+  PrivateSubnetBNetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetB
+      NetworkAclId:
+        Ref: PrivateNetworkAcl
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: Network
+        Value: Public
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-Public-RouteTable"
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: Network
+        Value: Private
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-PrivateA-RouteTable"
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: Network
+        Value: Private
+      - Key: Name
+        Value:
+          Fn::Join:
+          - ''
+          - - Ref: VpcName
+            - "-PrivateB-RouteTable"
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PublicSubnetA
+      RouteTableId:
+        Ref: PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PublicSubnetB
+      RouteTableId:
+        Ref: PublicRouteTable
+
+  PublicSubnetRouteToInternetGateway:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+      RouteTableId:
+        Ref: PublicRouteTable
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetA
+      RouteTableId:
+        Ref: PrivateRouteTableA
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: PrivateSubnetB
+      RouteTableId:
+        Ref: PrivateRouteTableB
+
+  InboundPrivateNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId:
+        Ref: PrivateNetworkAcl
+      RuleNumber: '100'
+      Protocol: "-1"
+      RuleAction: allow
+      Egress: 'false'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '0'
+        To: '65535'
+
+  OutBoundPrivateNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId:
+        Ref: PrivateNetworkAcl
+      RuleNumber: '100'
+      Protocol: "-1"
+      RuleAction: allow
+      Egress: 'true'
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '0'
+        To: '65535'
+
+  NATEIPA:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NATEIPB:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NATGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+        - NATEIPA
+        - AllocationId
+      SubnetId:
+        Ref: PublicSubnetA
+
+  NATGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId:
+        Fn::GetAtt:
+        - NATEIPB
+        - AllocationId
+      SubnetId:
+        Ref: PublicSubnetB
+
+  PrivateRouteToNatGatewayA:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NATGatewayA
+      RouteTableId:
+        Ref: PrivateRouteTableA
+
+  PrivateRouteToNatGatewayB:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NATGatewayB
+      RouteTableId:
+        Ref: PrivateRouteTableB
+
+  PrivateS3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Action: "*"
+          Effect: Allow
+          Resource: "*"
+          Principal: "*"
+      RouteTableIds:
+      - Ref: PrivateRouteTableA
+      - Ref: PrivateRouteTableB
+      ServiceName:
+        Fn::Join:
+        - ''
+        - - com.amazonaws.
+          - Ref: AWS::Region
+          - ".s3"
+      VpcId:
+        Ref: VPC
+
+  PublicS3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Action: "*"
+          Effect: Allow
+          Resource: "*"
+          Principal: "*"
+      RouteTableIds:
+      - Ref: PublicRouteTable
+      ServiceName:
+        Fn::Join:
+        - ''
+        - - com.amazonaws.
+          - Ref: AWS::Region
+          - ".s3"
+      VpcId:
+        Ref: VPC
+
+  PrivateDynamoEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Action: "*"
+          Effect: Allow
+          Resource: "*"
+          Principal: "*"
+      RouteTableIds:
+      - Ref: PrivateRouteTableA
+      - Ref: PrivateRouteTableB
+      ServiceName:
+        Fn::Join:
+        - ''
+        - - com.amazonaws.
+          - Ref: AWS::Region
+          - ".dynamodb"
+      VpcId:
+        Ref: VPC
+
+  PublicDynamoEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Action: "*"
+          Effect: Allow
+          Resource: "*"
+          Principal: "*"
+      RouteTableIds:
+      - Ref: PublicRouteTable
+      ServiceName:
+        Fn::Join:
+        - ''
+        - - com.amazonaws.
+          - Ref: AWS::Region
+          - ".dynamodb"
+      VpcId:
+        Ref: VPC
+
+Outputs:
+
+  VpcId:
+    Description: VPCId of the newly created VPC
+    Value:
+      Ref: VPC
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-VPCID"
+
+  PublicSubnets:
+    Description: List of public subnets
+    Value: !Join [ ",", [ !Ref PublicSubnetA, !Ref PublicSubnetB ]]
+
+  PrivateSubnets:
+    Description: List of public subnets
+    Value: !Join [ ",", [ !Ref PrivateSubnetA, !Ref PrivateSubnetB ]]
+
+  PrivateSubnetA:
+    Description: SubnetId of the Private subnet
+    Value:
+      Ref: PrivateSubnetA
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-PrivateSubnetA"
+
+  PrivateSubnetB:
+    Description: SubnetId of the Private subnet
+    Value:
+      Ref: PrivateSubnetB
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-PrivateSubnetB"
+
+  PublicSubnetA:
+    Description: SubnetId of the Public subnet
+    Value:
+      Ref: PublicSubnetA
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-PublicSubnetA"
+
+  PublicSubnetB:
+    Description: SubnetId of the Public subnet
+    Value:
+      Ref: PublicSubnetB
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-PublicSubnetB"

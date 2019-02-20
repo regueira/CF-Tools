@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Tools Stack
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: 1- General Configurations
+      Parameters:
+      - Project
+      - Environment
+      - Owner
+      - HostKeyPair
+      - BucketName
+    - Label:
+        default: 2- VPC/Network
+      Parameters:
+      - VPCCIDR
+      - PrivateSubnetACIDR
+      - PrivateSubnetBCIDR
+      - PublicSubnetACIDR
+      - PublicSubnetBCIDR
+      - SubnetsAZ
+
+    - Label:
+        default: 3- Bastion
+      Parameters:
+      - LatestAmiId
+      - BastionInstanceType
+
+    - Label:
+        default: 4- ECS Cluster
+      Parameters:
+      - ECSAMI
+      - ClusterInstanceType
+      - ClusterSize
+      - ClusterMinSize
+      - ClusterMaxSize
+    - Label:
+        default: 5- Jenkins
+      Parameters:
+      - JenkinsDockerImage
+
+Parameters:
+
+  ############################################
+  # 1- General Configurations
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - QA
+    - UAT
+    - PROD
+
+  Project:
+    Description: Project name
+    Type: String
+
+  Owner:
+    Description: Full name or email
+    Type: String
+
+  HostKeyPair:
+    Description: Select the Stack key Pair
+    Type: AWS::EC2::KeyPair::KeyName
+
+  BucketName:
+    Type: String
+    Description: CloudFormation S3 Bucket name
+    Default: tools-seba-cf-templates
+
+  ############################################
+  # 2- VPC/Network
+  VPCCIDR:
+    Description: VPC IP CIDR
+    Type: String
+    Default: 10.192.0.0/16
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  PrivateSubnetACIDR:
+    Description: Private Subnet A CIDR
+    Type: String
+    Default: 10.192.20.0/24
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  PrivateSubnetBCIDR:
+    Description: Private Subnet B CIDR
+    Type: String
+    Default: 10.192.21.0/24
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  PublicSubnetACIDR:
+    Description: Public Subnet A CIDR
+    Type: String
+    Default: 10.192.10.0/24
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  PublicSubnetBCIDR:
+    Description: Public Subnet B CIDR
+    Type: String
+    Default: 10.192.11.0/24
+    AllowedPattern: "^(([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])/([1-2]?[0-9]|3[1-2])$"
+
+  SubnetsAZ:
+    Description: Select the availability zones for the subnet
+    Type: List<AWS::EC2::AvailabilityZone::Name>
+
+  ############################################
+  # 3- Bastion
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+  BastionInstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+
+  ############################################
+  # 4- ECS Cluster
+
+  ECSAMI:
+    Description: AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+
+  ClusterInstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.medium
+
+  ClusterSize:
+    Description: Cluster size
+    Type: Number
+    Default: 3
+
+  ClusterMinSize:
+    Description: Min Cluster size
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+
+  ClusterMaxSize:
+    Description: Max Cluster size
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 10
+
+  ############################################
+  # 5- Jenkins
+  JenkinsDockerImage:
+    Type: String
+    Default: hurban/jdid-master
+
+Resources:
+
+  VPC:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/vpc.yaml
+      Parameters:
+        VpcName: !Sub ${Project}-${Environment}
+        VPCCIDR: !Ref VPCCIDR
+        PrivateSubnetACIDR: !Ref PrivateSubnetACIDR
+        PrivateSubnetBCIDR: !Ref PrivateSubnetBCIDR
+        PublicSubnetACIDR: !Ref PublicSubnetACIDR
+        PublicSubnetBCIDR: !Ref PublicSubnetBCIDR
+        SubnetsAZ: !Join [ ",", [
+          !Select [ 0, !Ref SubnetsAZ ],
+          !Select [ 1, !Ref SubnetsAZ ]
+        ] ]
+        Environment: !Ref Environment
+        Project: !Ref Project
+        Owner: !Ref Owner
+
+  Bastion:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/bastion.yaml
+      Parameters:
+        Environment: !Ref Environment
+        Project: !Ref Project
+        Owner: !Ref Owner
+        VpcId: !GetAtt VPC.Outputs.VpcId
+        SubnetBastion: !GetAtt VPC.Outputs.PublicSubnetA
+        BastionInstanceType: !Ref BastionInstanceType
+        LatestAmiId: !Ref LatestAmiId
+        HostKeyPair: !Ref HostKeyPair
+
+  LoadBalancer:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/balancer.yaml
+      Parameters:
+        Environment: !Ref Environment
+        Project: !Ref Project
+        Owner: !Ref Owner
+        VpcId: !GetAtt VPC.Outputs.VpcId
+        Privacy: Public
+        Subnets: !GetAtt VPC.Outputs.PublicSubnets
+
+  ECSCluster:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/ecs-cluster.yaml
+      Parameters:
+        Environment: !Ref Environment
+        Project: !Ref Project
+        Owner: !Ref Owner
+        InstanceType: !Ref ClusterInstanceType
+        ClusterSize: !Ref ClusterSize
+        ClusterMinSize: !Ref ClusterMinSize
+        ClusterMaxSize: !Ref ClusterMaxSize
+        VpcId: !GetAtt VPC.Outputs.VpcId
+        Subnets: !GetAtt VPC.Outputs.PrivateSubnets
+        LoadBalancerALBSecurityGroup: !GetAtt LoadBalancer.Outputs.SecurityGroup
+        HostKeyPair: !Ref HostKeyPair
+        LatestAmiId: !Ref ECSAMI
+        VPCCIDR: !Ref VPCCIDR
+
+  JenkinsService:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/service.yaml
+      Parameters:
+        Environment: !Ref Environment
+        Project: !Ref Project
+        Owner: !Ref Owner
+        VpcId: !GetAtt VPC.Outputs.VpcId
+        Cluster: !GetAtt ECSCluster.Outputs.Cluster
+        DesiredCount: 1
+        LoadBalancer: !GetAtt LoadBalancer.Outputs.LoadBalancer
+        ContainerImage: !Ref JenkinsDockerImage
+        Family: Tools
+        ContainerName: jenkins-master
+        ContainerMemory: 2048
+        ContainerPort: 8080
+        JNLPContainerPort: 50000

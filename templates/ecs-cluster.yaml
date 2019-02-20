@@ -1,0 +1,341 @@
+Description: >
+    This template deploys an ECS cluster to the provided VPC and subnets 
+    using an Auto Scaling Group
+
+Parameters:
+
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - QA
+    - UAT
+    - PROD
+
+  Project:
+    Description: Project name
+    Type: String
+
+  Owner:
+    Description: Full name or email
+    Type: String
+
+
+  InstanceType:
+    Description: Which instance type should we use to build the ECS cluster?
+    Type: String
+    Default: t2.micro
+
+  ClusterSize:
+    Description: How many ECS hosts do you want to initially deploy?
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+
+  ClusterMinSize:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 10
+
+  ClusterMaxSize:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+
+  VpcId:
+    Description: Choose which VPC this ECS cluster should be deployed to
+    Type: AWS::EC2::VPC::Id
+
+  VPCCIDR:
+    Description: VPC IP CIDR
+    Type: String
+
+  Subnets:
+    Description: Choose which subnets this ECS cluster should be deployed to
+    Type: CommaDelimitedList
+    #Type: List<AWS::EC2::Subnet::Id>
+
+  LoadBalancerALBSecurityGroup:
+    Description: Select the ALB Security Group to use for the ECS cluster
+    Type: AWS::EC2::SecurityGroup::Id
+
+  HostKeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 KeyPair assigned to EC2 instance
+
+  LatestAmiId:
+    Type: String
+    #Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+
+Resources:
+
+  # This security group defines who/where is allowed to access the ECS hosts directly.
+  # By default we're just allowing access from the load balancer.  If you want to SSH
+  # into the hosts, or expose non-load balanced services you can open their ports here.
+  ECSServicesSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: Access to the ECS hosts and the tasks/containers that run on them
+      SecurityGroupIngress:
+      # Only allow inbound access to ECS from the ELB
+      - SourceSecurityGroupId: !Ref LoadBalancerALBSecurityGroup
+        IpProtocol: -1
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: !Ref VPCCIDR
+      Tags:
+      - Key: Name
+        Value: !Sub ${Project}-${Environment}-ECS-sg
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Owner
+        Value: !Ref Owner
+
+  EfsSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${Project}-${Environment}-efs-sg
+      GroupDescription: !Sub ${Project}-${Environment}-efs-sg
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 2049
+        ToPort: 2049
+        CidrIp: !Ref VPCCIDR
+      VpcId: !Ref VpcId
+
+  JenkinsEFS:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      FileSystemTags:
+      - Key: Name
+        Value: JenkinsHomeEFS
+
+  AZ1MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref JenkinsEFS
+      SubnetId: !Select [ 0, !Ref Subnets ]
+      SecurityGroups:
+      - !Ref EfsSG
+
+  AZ2MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref JenkinsEFS
+      SubnetId: !Select [ 1, !Ref Subnets ]
+      SecurityGroups:
+      - !Ref EfsSG
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${Project}-${Environment}
+
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref Subnets
+      LaunchConfigurationName: !Ref ECSLaunchConfiguration
+      MinSize: !Ref ClusterMinSize
+      MaxSize: !Ref ClusterMaxSize
+      DesiredCapacity: !Ref ClusterSize
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 400
+      Tags:
+        - Key: Name
+          Value: !Sub ${Project}-${Environment}-ECS-host
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+        - Key: Owner
+          Value: !Ref Owner
+          PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT15M
+        WaitOnResourceSignals: true
+        
+  ECSLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      KeyName: !Ref HostKeyPair
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref ECSServicesSecurityGroup
+      IamInstanceProfile: !Ref ECSInstanceProfile
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash -ex
+
+          yum update -y
+
+          yum install -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSLaunchConfiguration
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSAutoScalingGroup
+
+          echo 'fs.file-max = 100000' >> /etc/sysctl.conf
+          echo 'ec2-user          soft    nofile          10000' >> /etc/security/limits.conf
+          echo 'ec2-user          hard    nofile          50000' >> /etc/security/limits.conf
+          echo 'root          soft    nofile          10000' >> /etc/security/limits.conf
+          echo 'root          hard    nofile          50000' >> /etc/security/limits.conf
+
+          # EFS Config
+          yum install -y nfs-utils
+
+          EC2_AVAIL_ZONE=`curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone`
+
+          JENKINS_EFS_PATH=$EC2_AVAIL_ZONE.${JenkinsEFS}.efs.${AWS::Region}.amazonaws.com
+
+          install -d -o 1000 -g 1000 /var/jenkins_home
+          mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 JENKINS_EFS_PATH:/ /var/jenkins_home
+
+          chown 1000 /var/run/docker.sock
+
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          commands:
+            01_add_instance_to_cluster:
+              command: !Sub echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              mode: 000400
+              owner: root
+              group: root
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.ContainerInstances.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSLaunchConfiguration
+
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+
+
+  # Access policies for ECS, Logs, CloudWatch and CodeDeploy
+  ECSAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows grantee necessary access for ECS
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Resource: "*"
+            Action:
+              - "ecs:CreateCluster"
+              - "ecs:DeregisterContainerInstance"
+              - "ecs:DiscoverPollEndpoint"
+              - "ecs:Poll"
+              - "ecs:RegisterContainerInstance"
+              - "ecs:StartTelemetrySession"
+              - "ecs:Submit*"
+              - "ecr:BatchCheckLayerAvailability"
+              - "ecr:BatchGetImage"
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:GetAuthorizationToken"
+
+  CloudWatchAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows grantee necessary access for CloudWatch and CloudWatch Logs
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Resource: "*"
+            Action:
+              - "cloudwatch:describe*"
+              - "cloudwatch:get*"
+              - "cloudwatch:list*"
+              - "cloudwatch:put*"
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+              - "logs:DescribeLogGroups"
+              - "logs:DescribeLogStreams"
+
+
+  EC2DescribeAllowPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows grantee ability to execute describe calls agains EC2 API
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Resource: "*"
+            Action:
+              - "ec2:Describe*"
+
+
+  # This IAM Role is attached to all of the ECS hosts. It is based on the default role
+  # published here:
+  # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/instance_IAM_role.html
+  #
+  # You can add other IAM policy statements here to allow access from your ECS hosts
+  # to other AWS services. Please note that this role will be used by ALL containers
+  # running on the ECS host.
+
+  ECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: !Sub ${Project}-${Environment}-ECSRole-${AWS::Region}
+      AssumeRolePolicyDocument: |
+        {
+          "Statement": [{
+            "Action": "sts:AssumeRole",
+            "Effect": "Allow",
+            "Principal": {
+              "Service": "ec2.amazonaws.com"
+            }
+          }]
+        }
+      ManagedPolicyArns:
+        - !Ref CloudWatchAccessPolicy
+        - !Ref EC2DescribeAllowPolicy
+        - !Ref ECSAccessPolicy
+
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ECSRole
+
+Outputs:
+
+  Cluster:
+    Description: A reference to the ECS cluster
+    Value: !Ref ECSCluster
+
+  ECSSecurityGroup:
+    Description: ECS Cluster Security Group
+    Value: !Ref ECSServicesSecurityGroup

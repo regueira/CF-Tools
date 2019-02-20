@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+    Creates a Bastion instance
+
+Parameters:
+
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - QA
+    - UAT
+    - PROD
+
+  Project:
+    Description: Project name
+    Type: String
+
+  Owner:
+    Description: Full name or email
+    Type: String
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Choose which VPC the Applicaion Load Balancer should be deployed to
+
+  SubnetBastion:
+    Description: Choose which private subnets the Applicaion Load Balancer should be deployed to
+    Type: AWS::EC2::Subnet::Id
+
+  BastionInstanceType:
+    Type: String
+    Description: Bastion instance type
+    Default: t2.micro
+
+  LatestAmiId:
+    Type: String
+    Description: AMI ID to use
+    #Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+
+  HostKeyPair:
+    Description: Select the Security Group to apply to the Bastion
+    Type: AWS::EC2::KeyPair::KeyName
+
+Resources:
+
+  bastionHostEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref bastionInstance
+
+  bastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for Bastion hosts
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+      Tags:
+      - Key: Name
+        Value: !Sub Bastion-${Environment}-${Project}
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: Environment
+        Value: !Ref Environment
+
+  bastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !Ref HostKeyPair
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref BastionInstanceType
+      SecurityGroupIds:
+        - !Ref bastionSecurityGroup
+      SubnetId: !Ref SubnetBastion
+      Tags:
+        - Key: Name
+          Value: !Sub Bastion-${Environment}-${Project}
+        - Key: Owner
+          Value: !Ref Owner
+        - Key: Environment
+          Value: !Ref Environment
+      UserData:
+        "Fn::Base64": !Sub |
+            #!/bin/bash -ex
+            yum update -y
+
+Outputs:
+
+  BastionHostEIP:
+    Description: Bastion IP
+    Value: !Ref bastionHostEIP
+
+  BastionSecurityGroup:
+    Description: Bastion Security Group
+    Value: !Ref bastionSecurityGroup

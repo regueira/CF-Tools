@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Public Load balancer for public-facing services
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+  Subnets:
+    Type: CommaDelimitedList
+
+  Privacy:
+    Type: String
+    Default: Public
+    AllowedValues:
+    - Public
+    - Private
+
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - QA
+    - UAT
+    - PROD
+
+  Project:
+    Description: Project name
+    Type: String
+
+  Owner:
+    Description: Full name or email
+    Type: String
+
+Resources:
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${Project}-${Privacy}-alb-${Environment}-sg
+      SecurityGroupIngress:
+      - CidrIp: "0.0.0.0/0"
+        IpProtocol: "TCP"
+        FromPort: 80
+        ToPort: 80
+      - CidrIp: "0.0.0.0/0"
+        IpProtocol: "TCP"
+        FromPort: 50000
+        ToPort: 50000
+      VpcId: !Ref VpcId
+
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      LoadBalancerName: !Sub ${Project}-${Privacy}-elb-${Environment}
+      Subnets: !Ref Subnets
+      HealthCheck:
+        HealthyThreshold: 2
+        Interval: 30
+        Target: HTTP:8080/login
+        Timeout: 10
+        UnhealthyThreshold: 10
+      SecurityGroups:
+      - !Ref SecurityGroup
+      Listeners:
+      - LoadBalancerPort: 80
+        InstancePort: 8080
+        Protocol: HTTP
+        PolicyNames:
+        - JenkinsELBStickiness
+      - LoadBalancerPort: 50000
+        InstancePort: 50000
+        Protocol: TCP
+      LBCookieStickinessPolicy:
+      - CookieExpirationPeriod: '3600'
+        PolicyName: JenkinsELBStickiness
+      Tags:
+      - Key: Name
+        Value: !Sub ${Project}-${Privacy}-elb-${Environment}
+      - Key: Owner
+        Value: !Ref Owner
+      - Key: Environment
+        Value: !Ref Environment
+      - Key: Project
+        Value: !Ref Project
+
+Outputs:
+
+  LoadBalancer:
+    Description: Load Balancer
+    Value: !Ref LoadBalancer
+
+  DNSName:
+    Description: DNSName of the LoadBalancer
+    Value: !Sub ${LoadBalancer.DNSName}
+
+  ServiceUrl:
+    Description: URL of the load balancer for the sample service.
+    Value: !Sub http://${LoadBalancer.DNSName}
+
+  SecurityGroup:
+    Value: !Ref SecurityGroup

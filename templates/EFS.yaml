@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: EFS for Cluster
+
+Parameters:
+
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - QA
+    - UAT
+    - PROD
+
+  Project:
+    Description: Project name
+    Type: String
+
+  Owner:
+    Description: Full name or email
+    Type: String
+
+  VpcId:
+    Description: Choose which VPC this ECS cluster should be deployed to
+    Type: AWS::EC2::VPC::Id
+
+  VPCCIDR:
+    Description: VPC IP CIDR
+    Type: String
+
+  Subnets:
+    Description: Choose which subnets this ECS cluster should be deployed to
+    Type: CommaDelimitedList
+    #Type: List<AWS::EC2::Subnet::Id>
+
+  ExistingClusterEFS:
+    Type: String
+    Description: Existing EFS ID for ECS Cluster
+
+Conditions:
+  CreateEFS: !Equals [ "", !Ref ExistingClusterEFS ]
+
+Resources:
+
+  EfsSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${Project}-${Environment}-efs-sg
+      GroupDescription: !Sub ${Project}-${Environment}-efs-sg
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 2049
+        ToPort: 2049
+        CidrIp: !Ref VPCCIDR
+      VpcId: !Ref VpcId
+
+  ClusterEFS:
+    Type: AWS::EFS::FileSystem
+    Condition: CreateEFS
+    DeletionPolicy: Retain
+    Properties:
+      FileSystemTags:
+      - Key: Name
+        Value: ClusterEFS
+
+  AZ1MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !If [ CreateEFS, !Ref ClusterEFS, !Ref ExistingClusterEFS ]
+      SubnetId: !Select [ 0, !Ref Subnets ]
+      SecurityGroups:
+      - !Ref EfsSG
+
+  AZ2MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !If [ CreateEFS, !Ref ClusterEFS, !Ref ExistingClusterEFS ]
+      SubnetId: !Select [ 1, !Ref Subnets ]
+      SecurityGroups:
+      - !Ref EfsSG
+
+Outputs:
+  ClusterEFS:
+    Value: !If [ CreateEFS, !Ref ClusterEFS, !Ref ExistingClusterEFS ]

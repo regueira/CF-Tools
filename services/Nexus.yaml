@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates and deploys over ECS an Nexus service
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: 1- Resource Identification
+      Parameters:
+      - Project
+      - Environment
+    - Label:
+        default: 2- VPC/Network
+      Parameters:
+      - VpcId
+      - Subnets
+    - Label:
+        default: 3- ECS Cluster
+      Parameters:
+      - ECSCluster
+      - ELBSecurityGroup
+    - Label:
+        default: 4- Nexus Container
+      Parameters:
+      - Image
+      - DesiredCount
+      - ContainerCPU
+      - ContainerMemory
+      - ContainerPort
+
+Parameters:
+
+  Project:
+    Description: Name of the project
+    Type: String
+
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - PROD
+    - QA
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select a VPC that allows instances to access the Internet.
+
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select at two subnets in your selected VPC.
+
+  ECSCluster:
+    Description: Name of ECS Cluster for the task
+    Type: String
+
+  Image:
+    Description: Name of the image
+    Type: String
+    Default: sonatype/nexus3
+
+  ContainerCPU:
+    Description: CPU credits for docker container
+    Type: Number
+    Default: 1024
+
+  ContainerMemory:
+    Description: Memory for docker container
+    Type: Number
+    Default: 1024
+
+  ContainerPort:
+    Type: Number
+    Default: 8081
+
+  DesiredCount:
+    Description: How many instances of this task should we run across our cluster
+    Type: Number
+    Default: 1
+
+  ELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: ELB Security groups
+
+Resources:
+  CloudwatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref AWS::StackName
+      RetentionInDays: 14
+
+  NexusLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      LoadBalancerName:
+        Fn::Join:
+        - "-"
+        - - Nexus
+          - Ref: Project
+          - Ref: Environment
+      Subnets:
+        Ref: Subnets
+      Scheme: internet-facing
+      SecurityGroups:
+      - Ref: ELBSecurityGroup
+      Listeners:
+      - InstancePort: !Ref ContainerPort
+        InstanceProtocol: HTTP
+        LoadBalancerPort: 80
+        Protocol: HTTP
+      HealthCheck:
+        HealthyThreshold: 2
+        Interval: 60
+        Target: HTTP:8081/
+        Timeout: 20
+        UnhealthyThreshold: 5
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Join:
+          - "-"
+          - - Nexus
+            - Ref: Project
+            - Ref: Environment
+      - Key: Project
+        Value:
+          Ref: Project
+      - Key: Environment
+        Value:
+          Ref: Environment
+
+
+  taskdefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family:
+        Fn::Join:
+        - "-"
+        - - Nexus
+          - Ref: Project
+          - task
+      NetworkMode: bridge
+      ContainerDefinitions:
+      - Name: Nexus
+        Cpu:
+          Ref: ContainerCPU
+        Essential: true
+        Privileged: true
+        Image:
+          Ref: Image
+        Memory:
+          Ref: ContainerMemory
+        User: root
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group:
+              Ref: CloudwatchLogsGroup
+            awslogs-region:
+              Ref: AWS::Region
+            awslogs-stream-prefix: Nexus
+        MountPoints:
+        - SourceVolume: nexus-data
+          ContainerPath: "/nexus-data"
+          ReadOnly: false
+        PortMappings:
+        - HostPort: !Ref ContainerPort
+          ContainerPort: !Ref ContainerPort
+        Ulimits:
+        - HardLimit: 65536
+          Name: nofile
+          SoftLimit: 65536
+      Volumes:
+      - Name: nexus-data
+        Host:
+          SourcePath: "/EFS/nexus-data/"
+  service:
+    Type: AWS::ECS::Service
+    DependsOn: NexusLoadBalancer
+    Properties:
+      Cluster:
+        Ref: ECSCluster
+      DesiredCount: !Ref DesiredCount
+      LoadBalancers:
+      - ContainerName: Nexus
+        ContainerPort: !Ref ContainerPort
+        LoadBalancerName:
+          Ref: NexusLoadBalancer
+      Role:
+        Ref: ECSServiceRole
+      TaskDefinition:
+        Ref: taskdefinition
+
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ecs.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:DeregisterInstancesFromLoadBalancer
+            - elasticloadbalancing:DeregisterTargets
+            - elasticloadbalancing:Describe*
+            - elasticloadbalancing:RegisterInstancesWithLoadBalancer
+            - elasticloadbalancing:RegisterTargets
+            - ec2:Describe*
+            - ec2:AuthorizeSecurityGroupIngress
+            Resource: "*"
+Outputs:
+  ecsservice:
+    Value:
+      Ref: service
+  NexusLoadBalancer:
+    Description: Your ALB DNS URL
+    Value:
+      Fn::Join:
+      - ''
+      - - Fn::GetAtt:
+          - NexusLoadBalancer
+          - DNSName
+  taskdef:
+    Value:
+      Ref: taskdefinition

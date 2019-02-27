@@ -38,9 +38,9 @@ Metadata:
       - ClusterMinSize
       - ClusterMaxSize
     - Label:
-        default: 5- Jenkins
+        default: 5- (Optional) Existing EFS for Cluster
       Parameters:
-      - JenkinsDockerImage
+      - ClusterEFS
 
 Parameters:
 
@@ -71,7 +71,7 @@ Parameters:
   BucketName:
     Type: String
     Description: CloudFormation S3 Bucket name
-    Default: tools-seba-cf-templates
+    Default: https://s3.amazonaws.com/tools-seba-cf-templates
 
   ############################################
   # 2- VPC/Network
@@ -152,18 +152,16 @@ Parameters:
     MinValue: 1
     MaxValue: 10
 
-  ############################################
-  # 5- Jenkins
-  JenkinsDockerImage:
+  ClusterEFS:
     Type: String
-    Default: hurban/jdid-master
+    Description: Existing EFS ID for ECS Cluster
 
 Resources:
 
   VPC:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/vpc.yaml
+      TemplateURL: !Sub ${BucketName}/templates/vpc.yaml
       Parameters:
         VpcName: !Sub ${Project}-${Environment}
         VPCCIDR: !Ref VPCCIDR
@@ -182,7 +180,7 @@ Resources:
   Bastion:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/bastion.yaml
+      TemplateURL: !Sub ${BucketName}/templates/bastion.yaml
       Parameters:
         Environment: !Ref Environment
         Project: !Ref Project
@@ -193,22 +191,23 @@ Resources:
         LatestAmiId: !Ref LatestAmiId
         HostKeyPair: !Ref HostKeyPair
 
-  LoadBalancer:
+  EFS:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/balancer.yaml
+      TemplateURL: !Sub ${BucketName}/templates/EFS.yaml
       Parameters:
         Environment: !Ref Environment
         Project: !Ref Project
         Owner: !Ref Owner
         VpcId: !GetAtt VPC.Outputs.VpcId
-        Privacy: Public
-        Subnets: !GetAtt VPC.Outputs.PublicSubnets
+        Subnets: !GetAtt VPC.Outputs.PrivateSubnets
+        VPCCIDR: !Ref VPCCIDR
+        ExistingClusterEFS: !Ref ClusterEFS
 
   ECSCluster:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/ecs-cluster.yaml
+      TemplateURL: !Sub ${BucketName}/templates/ecs-cluster.yaml
       Parameters:
         Environment: !Ref Environment
         Project: !Ref Project
@@ -219,26 +218,7 @@ Resources:
         ClusterMaxSize: !Ref ClusterMaxSize
         VpcId: !GetAtt VPC.Outputs.VpcId
         Subnets: !GetAtt VPC.Outputs.PrivateSubnets
-        LoadBalancerALBSecurityGroup: !GetAtt LoadBalancer.Outputs.SecurityGroup
         HostKeyPair: !Ref HostKeyPair
         LatestAmiId: !Ref ECSAMI
         VPCCIDR: !Ref VPCCIDR
-
-  JenkinsService:
-    Type: AWS::CloudFormation::Stack
-    Properties:
-      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${BucketName}/templates/service.yaml
-      Parameters:
-        Environment: !Ref Environment
-        Project: !Ref Project
-        Owner: !Ref Owner
-        VpcId: !GetAtt VPC.Outputs.VpcId
-        Cluster: !GetAtt ECSCluster.Outputs.Cluster
-        DesiredCount: 1
-        LoadBalancer: !GetAtt LoadBalancer.Outputs.LoadBalancer
-        ContainerImage: !Ref JenkinsDockerImage
-        Family: Tools
-        ContainerName: jenkins-master
-        ContainerMemory: 2048
-        ContainerPort: 8080
-        JNLPContainerPort: 50000
+        ClusterEFS: !GetAtt EFS.Outputs.ClusterEFS

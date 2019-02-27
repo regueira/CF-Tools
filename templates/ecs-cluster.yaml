@@ -1,6 +1,5 @@
 Description: >
-    This template deploys an ECS cluster to the provided VPC and subnets 
-    using an Auto Scaling Group
+    This template deploys an ECS cluster
 
 Parameters:
 
@@ -60,10 +59,6 @@ Parameters:
     Type: CommaDelimitedList
     #Type: List<AWS::EC2::Subnet::Id>
 
-  LoadBalancerALBSecurityGroup:
-    Description: Select the ALB Security Group to use for the ECS cluster
-    Type: AWS::EC2::SecurityGroup::Id
-
   HostKeyPair:
     Type: AWS::EC2::KeyPair::KeyName
     Description: EC2 KeyPair assigned to EC2 instance
@@ -72,7 +67,28 @@ Parameters:
     Type: String
     #Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
 
+  ClusterEFS:
+    Type: String
+    Description: Cluster EFS ID
+
+
 Resources:
+
+  # This security group defines who/where is allowed to acces the ELB and It's attached to the Cluster
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${Project}-elb-${Environment}-sg
+      SecurityGroupIngress:
+      - CidrIp: "0.0.0.0/0"
+        IpProtocol: "TCP"
+        FromPort: 80
+        ToPort: 80
+      - CidrIp: "0.0.0.0/0"
+        IpProtocol: "TCP"
+        FromPort: 50000
+        ToPort: 50000
+      VpcId: !Ref VpcId
 
   # This security group defines who/where is allowed to access the ECS hosts directly.
   # By default we're just allowing access from the load balancer.  If you want to SSH
@@ -84,7 +100,7 @@ Resources:
       GroupDescription: Access to the ECS hosts and the tasks/containers that run on them
       SecurityGroupIngress:
       # Only allow inbound access to ECS from the ELB
-      - SourceSecurityGroupId: !Ref LoadBalancerALBSecurityGroup
+      - SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
         IpProtocol: -1
       - IpProtocol: tcp
         FromPort: 22
@@ -97,41 +113,6 @@ Resources:
         Value: !Ref Environment
       - Key: Owner
         Value: !Ref Owner
-
-  EfsSG:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupName: !Sub ${Project}-${Environment}-efs-sg
-      GroupDescription: !Sub ${Project}-${Environment}-efs-sg
-      SecurityGroupIngress:
-      - IpProtocol: tcp
-        FromPort: 2049
-        ToPort: 2049
-        CidrIp: !Ref VPCCIDR
-      VpcId: !Ref VpcId
-
-  JenkinsEFS:
-    Type: AWS::EFS::FileSystem
-    Properties:
-      FileSystemTags:
-      - Key: Name
-        Value: JenkinsHomeEFS
-
-  AZ1MountTarget:
-    Type: AWS::EFS::MountTarget
-    Properties:
-      FileSystemId: !Ref JenkinsEFS
-      SubnetId: !Select [ 0, !Ref Subnets ]
-      SecurityGroups:
-      - !Ref EfsSG
-
-  AZ2MountTarget:
-    Type: AWS::EFS::MountTarget
-    Properties:
-      FileSystemId: !Ref JenkinsEFS
-      SubnetId: !Select [ 1, !Ref Subnets ]
-      SecurityGroups:
-      - !Ref EfsSG
 
   ECSCluster:
     Type: AWS::ECS::Cluster
@@ -182,10 +163,7 @@ Resources:
           #!/bin/bash -ex
 
           yum update -y
-
           yum install -y aws-cfn-bootstrap
-          /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSLaunchConfiguration
-          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSAutoScalingGroup
 
           echo 'fs.file-max = 100000' >> /etc/sysctl.conf
           echo 'ec2-user          soft    nofile          10000' >> /etc/security/limits.conf
@@ -196,14 +174,19 @@ Resources:
           # EFS Config
           yum install -y nfs-utils
 
-          EC2_AVAIL_ZONE=`curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone`
+          install -d -o 1000 -g 1000 /EFS
+          mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 ${ClusterEFS}.efs.${AWS::Region}.amazonaws.com:/ /EFS
 
-          JENKINS_EFS_PATH=$EC2_AVAIL_ZONE.${JenkinsEFS}.efs.${AWS::Region}.amazonaws.com
+          install -d -o 1000 -g 1000 /EFS/jenkins_home
+          install -d -o 1000 -g 1000 /EFS/SonarQube-data
+          install -d -o 1000 -g 1000 /EFS/SonarQube-conf
+          install -d -o 1000 -g 1000 /EFS/SonarQube-extensions
+          install -d -o 1000 -g 1000 /EFS/SonarQube-plugins
+          install -d -o 1000 -g 1000 /EFS/nexus-data
+          install -d -o 1000 -g 1000 /EFS/others
 
-          install -d -o 1000 -g 1000 /var/jenkins_home
-          mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 JENKINS_EFS_PATH:/ /var/jenkins_home
-
-          chown 1000 /var/run/docker.sock
+          /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSLaunchConfiguration
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSAutoScalingGroup
 
     Metadata:
       AWS::CloudFormation::Init:
@@ -339,3 +322,6 @@ Outputs:
   ECSSecurityGroup:
     Description: ECS Cluster Security Group
     Value: !Ref ECSServicesSecurityGroup
+
+  LoadBalancerSecurityGroup:
+    Value: LoadBalancerSecurityGroup

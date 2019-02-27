@@ -1,0 +1,281 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates and deploys over ECS an SonarQube service
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: 1- Resource Identification
+      Parameters:
+      - Project
+      - Environment
+    - Label:
+        default: 2- VPC/Network
+      Parameters:
+      - VpcId
+      - Subnets
+    - Label:
+        default: 3- ECS Cluster
+      Parameters:
+        - ECSCluster
+        - ELBSecurityGroup
+    - Label:
+        default: 4- Sonarqube Container
+      Parameters:
+        - Image
+        - DesiredCount
+        - ContainerCPU
+        - ContainerMemory
+        - ContainerPort
+    - Label:
+        default: 5- (Optional) RDS Database
+      Parameters:
+        - SonarQubeRDSEndpoint
+        - SonarQubeRDSUser
+        - SonarQubeRDSPassword
+
+Parameters:
+
+  Project:
+    Description: Project name
+    Type: String
+
+  Environment:
+    Description: Environment of the project
+    Type: String
+    Default: DEV
+    AllowedValues:
+    - DEV
+    - QA
+    - UAT
+    - PROD
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select a VPC that allows instances to access the Internet.
+
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select at two subnets in your selected VPC.
+
+  ECSCluster:
+    Description: Name of ECS Cluster for the task
+    Type: String
+
+  Image:
+    Description: Name of the image
+    Type: String
+    Default: "sonarqube:7.1"
+
+  ContainerCPU:
+    Description: CPU credits for docker container
+    Type: Number
+    Default: 1024
+
+  ContainerMemory:
+    Description: Memory for docker container
+    Type: Number
+    Default: 2048
+
+  ContainerPort:
+    Type: Number
+    Default: 9000
+
+  SonarQubeRDSUser:
+    Description: DB Username
+    Type: String
+
+  SonarQubeRDSPassword:
+    Description: DB Password
+    Type: String
+
+  SonarQubeRDSEndpoint:
+    Description: JDBC URL
+    Type: String
+
+  ELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: ELB Security groups
+
+  DesiredCount:
+    Description: How many instances of this task should we run across our cluster
+    Type: Number
+    Default: 1
+
+Resources:
+  CloudwatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+        - "-"
+        - - ECSLogGroup
+          - Ref: Project
+          - SonarQube
+      RetentionInDays: 14
+
+  SonarQubeLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      LoadBalancerName:
+        Fn::Join:
+        - "-"
+        - - SonarQube
+          - Ref: Project
+          - Ref: Environment
+      Subnets:
+        Ref: Subnets
+      Scheme: internet-facing
+      SecurityGroups:
+      - !Ref ELBSecurityGroup
+      Listeners:
+      - InstancePort: !Ref ContainerPort
+        InstanceProtocol: HTTP
+        LoadBalancerPort: 80
+        Protocol: HTTP
+      HealthCheck:
+        HealthyThreshold: 2
+        Interval: 30
+        Target: HTTP:9000/
+        Timeout: 15
+        UnhealthyThreshold: 5
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Join:
+          - "-"
+          - - SonarQube
+            - Ref: Project
+            - Ref: Environment
+      - Key: Project
+        Value:
+          Ref: Project
+      - Key: Environment
+        Value:
+          Ref: Environment
+
+
+  taskdefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family:
+        Fn::Join:
+        - "-"
+        - - SonarQube
+          - Ref: Project
+          - task
+      NetworkMode: bridge
+      ContainerDefinitions:
+      - Name: SonarQube
+        Cpu: !Ref ContainerCPU
+        Essential: true
+        Image: !Ref Image
+        Memory: !Ref ContainerMemory
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: !Ref CloudwatchLogsGroup
+            awslogs-region: !Ref AWS::Region
+            awslogs-stream-prefix: SonarQube
+        MountPoints:
+        - SourceVolume: SonarQube-data
+          ContainerPath: "/opt/sonarqube/data"
+          ReadOnly: false
+        - SourceVolume: SonarQube-conf
+          ContainerPath: "/opt/sonarqube/conf"
+          ReadOnly: false
+        - SourceVolume: SonarQube-extensions
+          ContainerPath: "/opt/sonarqube/extensions"
+          ReadOnly: false
+        - SourceVolume: SonarQube-plugins
+          ContainerPath: "/opt/sonarqube/lib/bundled-plugins"
+          ReadOnly: false
+        PortMappings:
+        - HostPort: !Ref ContainerPort
+          ContainerPort: !Ref ContainerPort
+        Ulimits:
+        - HardLimit: 65536
+          Name: nofile
+          SoftLimit: 65536
+        Environment:
+        - Name: SONARQUBE_JDBC_USERNAME
+          Value:
+            Ref: SonarQubeRDSUser
+        - Name: SONARQUBE_JDBC_PASSWORD
+          Value:
+            Ref: SonarQubeRDSPassword
+        - Name: SONARQUBE_JDBC_URL
+          Value:
+            Ref: SonarQubeRDSEndpoint
+      Volumes:
+      - Name: SonarQube-data
+        Host:
+          SourcePath: "/EFS/SonarQube-data/"
+      - Name: SonarQube-conf
+        Host:
+          SourcePath: "/EFS/SonarQube-conf/"
+      - Name: SonarQube-extensions
+        Host:
+          SourcePath: "/EFS/SonarQube-extensions/"
+      - Name: SonarQube-plugins
+        Host:
+          SourcePath: "/EFS/SonarQube-plugins/"
+
+  service:
+    Type: AWS::ECS::Service
+    DependsOn: SonarQubeLoadBalancer
+    Properties:
+      Cluster:
+        Ref: ECSCluster
+      DesiredCount: !Ref DesiredCount
+      LoadBalancers:
+      - ContainerName: SonarQube
+        ContainerPort: !Ref ContainerPort
+        LoadBalancerName:
+          Ref: SonarQubeLoadBalancer
+      Role:
+        Ref: ECSServiceRole
+      TaskDefinition:
+        Ref: taskdefinition
+
+  ECSServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ecs.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+            - elasticloadbalancing:DeregisterInstancesFromLoadBalancer
+            - elasticloadbalancing:DeregisterTargets
+            - elasticloadbalancing:Describe*
+            - elasticloadbalancing:RegisterInstancesWithLoadBalancer
+            - elasticloadbalancing:RegisterTargets
+            - ec2:Describe*
+            - ec2:AuthorizeSecurityGroupIngress
+            Resource: "*"
+
+Outputs:
+  ecsservice:
+    Value:
+      Ref: service
+  SonarQubeLoadBalancer:
+    Description: Your ALB DNS URL
+    Value:
+      Fn::Join:
+      - ''
+      - - Fn::GetAtt:
+          - SonarQubeLoadBalancer
+          - DNSName
+  taskdef:
+    Value:
+      Ref: taskdefinition
